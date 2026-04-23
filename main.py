@@ -1,25 +1,112 @@
+import os 
+from PIL import Image
+import pandas as pd
+import sys
+import cv2
+import numpy as np
+import matplotlib
+from matplotlib import pyplot as plt
+from mpl_toolkits.axes_grid1 import ImageGrid
+from scipy.spatial.transform import Rotation as R
+from streamlit_drawable_canvas import st_canvas
+
+
+import sphere_snap.utils as snap_utils
+import sphere_snap.sphere_coor_projections as sphere_proj
+from sphere_snap.snap_config import SnapConfig, ImageProjectionType
+from sphere_snap.sphere_snap import SphereSnap
+import sphere_snap.reprojections as rpr
+
+
 import streamlit as st
 import subprocess as sp
 
 # have a file upload area
 # have a button that converts it from e2c
 
-uploaded_file = st.file_uploader("Choose a file")
-if uploaded_file is not None:
-    # To read file as bytes:
-    bytes_data = uploaded_file.getvalue()
-    with open("eq.png","wb") as f:
-      f.write(bytes_data)
-    sp.run(f"convert360 e2c eq.png cube.png --size 200",shell=True)
-    with open("cube.png","rb") as f: 
-      st.image("cube.png")
-      st.download_button(
-          label="Download cubemap",
-          data=f,
-          file_name="cube.png",
-          mime="image/png",
-          icon=":material/download:",
-      ) 
 # draw the image in the viewport 
 # show a download button
 
+def show_img(img):
+    plt.figure(figsize=(13, 13))
+    plt.imshow(img)
+    plt.show()
+
+def show_imgs(imgs, size = 14, nb_cols=2, title_txt= None, fontsize=10, imgs_text = None):
+    """
+    Display a gird of images 
+    :param imgs: the list of images to be displayed 
+    :param size: display size of a cell
+    :param nb_cols: number of columns
+    """
+
+    row_size = int(np.ceil(len(imgs)/nb_cols))
+    fig = plt.figure(figsize=(size,size))
+    axes_pad = 0.1 if imgs_text is None else 0.5
+
+    if title_txt is not None:
+        fig.suptitle(title_txt, fontsize=fontsize)
+    grid = ImageGrid(fig, 111,  # similar to subplot(111)
+                     nrows_ncols=(row_size, nb_cols),  # creates 2x2 grid of axes
+                     axes_pad=axes_pad,  # pad between axes in inch.
+                     )
+
+    for idx, data in enumerate(zip(grid, imgs)):
+        ax, img  = data
+        if imgs_text is not None:
+             ax.set_title(imgs_text[idx], fontdict={'fontsize': 15, 'fontweight': 'medium'}, loc='center', color = "k")
+        ax.imshow(img)
+    fig.savefig("result.png")
+    return "result.png"
+    
+def rot(yaw, pitch):
+    return R.from_euler("yxz",[yaw,-pitch,0], degrees=True).as_quat()
+
+def blend_img(a, b, alpha=0.8):
+    return (alpha*a + (1-alpha) * b).astype(np.uint8)
+
+equi = st.file_uploader("pick an equi")
+if equi is not None:
+  print(dir(equi))
+  # save the contents to known locations so the rest of the code works when reading from disk
+  with open(f"{equi.name}","wb") as f:
+    f.write(equi.getvalue())
+  im = Image.open(equi.name)
+  # Specify canvas parameters in application
+  drawing_mode = st.sidebar.selectbox(
+      "Drawing tool:", ("point", "freedraw", "line", "rect", "circle", "transform")
+  )
+
+  stroke_width = st.sidebar.slider("Stroke width: ", 1, 25, 3)
+  if drawing_mode == 'point':
+      point_display_radius = st.sidebar.slider("Point display radius: ", 1, 25, 3)
+  stroke_color = st.sidebar.color_picker("Stroke color hex: ")
+  bg_color = st.sidebar.color_picker("Background color hex: ", "#eee")
+
+  realtime_update = st.sidebar.checkbox("Update in realtime", True)
+
+      
+
+  # Create a canvas component
+  canvas_result = st_canvas(
+      fill_color="rgba(255, 165, 0, 0.3)",  # Fixed fill color with some opacity
+      stroke_width=stroke_width,
+      stroke_color=stroke_color,
+      background_color=bg_color,
+      background_image=Image.open(equi.name) ,
+      update_streamlit=realtime_update,
+      width= im.width,
+      height=im.height,
+      drawing_mode=drawing_mode,
+      point_display_radius=point_display_radius if drawing_mode == 'point' else 0,
+      key="canvas",
+  )
+
+  # Do something interesting with the image data and paths
+  if canvas_result.image_data is not None:
+      st.image(canvas_result.image_data)
+  if canvas_result.json_data is not None:
+      objects = pd.json_normalize(canvas_result.json_data["objects"]) # need to convert obj to str because PyArrow
+      for col in objects.select_dtypes(include=['object']).columns:
+          objects[col] = objects[col].astype("str")
+      st.dataframe(objects)
